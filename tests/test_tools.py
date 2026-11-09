@@ -37,3 +37,27 @@ async def test_function_tool_schema_and_validation() -> None:
     assert await tool({"a": "3"}) == '{"sum": 5}'
     with pytest.raises(ValueError):
         await tool({"a": "not a number"})
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "(((9**99)**99)**99)**99",  # cada nível multiplica o expoente; com int do Python isso trava a CPU
+        "((((2**100)**100)**100)**100)**100",
+        "(10**100)**100 * (10**100)**100",
+    ],
+)
+def test_nested_powers_fail_fast_instead_of_hanging(expr: str) -> None:
+    # Roda num processo separado: sem a correção ele fica preso por minutos e o timeout derruba o teste.
+    import subprocess
+    import sys
+
+    code = f"from agent_orchestrator.tools import calculator; print(calculator({expr!r}))"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=10)
+    assert out.stdout.startswith("error:"), out.stdout + out.stderr
+
+
+def test_float_math_still_correct() -> None:
+    assert safe_eval("(1.0125 ** 12 - 1) * 100") == pytest.approx(16.0755, abs=1e-4)
+    assert safe_eval("7 // 2") == 3
+    assert safe_eval("2 ** 10") == 1024

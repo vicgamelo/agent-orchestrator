@@ -92,23 +92,24 @@ _FUNCS: dict[str, Callable[..., Any]] = {
 
 def safe_eval(expression: str) -> float:
     """Evaluate arithmetic without ``eval``: only numbers, + - * / // % **, and a
-    whitelist of math functions. Exponents are capped to avoid CPU bombs."""
+    whitelist of math functions. Everything is a float: Python ints have no size limit,
+    so nested powers like ``((9**99)**99)**99`` would pin the CPU; floats overflow at once."""
 
     def ev(node: ast.AST) -> Any:
         match node:
             case ast.Expression(body=body):
                 return ev(body)
             case ast.Constant(value=v) if isinstance(v, int | float) and not isinstance(v, bool):
-                return v
+                return float(v)
             case ast.BinOp(left=l, op=op, right=r) if type(op) in _BIN_OPS:
-                left, right = ev(l), ev(r)
+                left, right = float(ev(l)), float(ev(r))
                 if isinstance(op, ast.Pow) and abs(right) > 100:
                     raise ValueError("exponent too large")
                 return _BIN_OPS[type(op)](left, right)
             case ast.UnaryOp(op=op, operand=o) if type(op) in _UNARY_OPS:
-                return _UNARY_OPS[type(op)](ev(o))
+                return _UNARY_OPS[type(op)](float(ev(o)))
             case ast.Call(func=ast.Name(id=fname), args=args, keywords=[]) if fname in _FUNCS:
-                return _FUNCS[fname](*[ev(a) for a in args])
+                return float(_FUNCS[fname](*[float(ev(a)) for a in args]))
         raise ValueError(f"unsupported expression: {ast.dump(node)[:60]}")
 
     if len(expression) > 300:
