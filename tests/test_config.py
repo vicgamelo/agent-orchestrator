@@ -112,3 +112,27 @@ def test_example_config_free_tier_chain(monkeypatch: pytest.MonkeyPatch) -> None
     assert cfg.providers["groq"].base_url == "https://api.groq.com/openai/v1"
     assert cfg.providers["groq"].api_key == "gsk_test"
     assert cfg.providers["openrouter"].base_url == "https://openrouter.ai/api/v1"
+
+
+def test_free_only_provider_rejects_a_paid_model() -> None:
+    # Um id sem ":free" no OpenRouter gasta crédito: a config nem sobe.
+    providers = {**_providers(), "openrouter": {"type": "openai", "base_url": "u", "free_models_only": True}}
+    with pytest.raises(ValidationError, match="only takes ':free' models, got 'google/gemma-4-31b-it'"):
+        make_config(
+            providers=providers,
+            agents=[_agent(provider=["groq", "openrouter"], model="m", models={"openrouter": "google/gemma-4-31b-it"})],
+            default_agent="a",
+        )
+    ok = make_config(
+        providers=providers,
+        agents=[_agent(provider=["groq", "openrouter"], model="m", models={"openrouter": "x:free"})],
+        default_agent="a",
+    )
+    assert ok.agents[0].model_for("openrouter") == "x:free"
+
+
+def test_example_config_refuses_paid_openrouter_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COORDINATOR_PROVIDER", "groq,openrouter")
+    monkeypatch.setenv("OPENROUTER_COORDINATOR_MODEL", "anthropic/claude-sonnet-5-5")
+    with pytest.raises(ValidationError, match="only takes ':free' models"):
+        load_config(Path(__file__).parent.parent / "agents.yaml")

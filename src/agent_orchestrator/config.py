@@ -18,6 +18,8 @@ class ProviderConfig(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     timeout_s: float = Field(default=120.0, gt=0)
+    # Refuse to start with a model that isn't ``...:free`` (OpenRouter bills the others against credits).
+    free_models_only: bool = False
 
 
 class MCPServerConfig(BaseModel):
@@ -92,7 +94,9 @@ class AppConfig(BaseModel):
             for p in chain:
                 if p not in self.providers:
                     raise ValueError(f"agent {a.name!r} uses unknown provider {p!r}")
-                a.model_for(p)
+                model = a.model_for(p)
+                if self.providers[p].free_models_only and not model.endswith(":free"):
+                    raise ValueError(f"agent {a.name!r}: provider {p!r} only takes ':free' models, got {model!r}")
             for d in a.delegates:
                 if d not in names or d == a.name:
                     raise ValueError(f"agent {a.name!r} has invalid delegate {d!r}")

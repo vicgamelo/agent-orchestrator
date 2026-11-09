@@ -25,6 +25,7 @@ providers:
     base_url: https://openrouter.ai/api/v1
     api_key: ${OPENROUTER_API_KEY:-}
     timeout_s: 60
+    free_models_only: true             # a paid model id here would spend credits: refuse to start instead
 
 mcp_servers:
   - name: brasil
