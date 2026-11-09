@@ -1,0 +1,62 @@
+# A small analyst team for Brazilian business questions.
+#
+#   coordinator ──► economist          (Banco Central indicators, calculator)
+#               └─► company_researcher (CNPJ, CEP, business days)
+#
+# Providers are swappable per agent: run everything locally on Ollama, or point
+# the coordinator at Claude and keep the workers on a cheap/local model.
+
+providers:
+  local:
+    type: openai                       # any OpenAI-compatible server
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
+  anthropic:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY:-}
+
+mcp_servers:
+  - name: brasil
+    # Hosted instance; or run it locally with: command: uvx, args: [mcp-server-brasil]
+    url: ${MCP_BRASIL_URL:-https://mcp.vgmelo.tech/mcp}
+
+agents:
+  - name: coordinator
+    description: Plans the work, delegates to specialists and writes the final answer.
+    provider: ${COORDINATOR_PROVIDER:-local}
+    model: ${COORDINATOR_MODEL:-qwen3.5:9b}
+    delegates: [economist, company_researcher]
+    tools: [current_datetime]
+    max_steps: 6
+    instructions: |
+      You coordinate a team of analysts. Break the user's question into independent
+      sub-tasks and delegate them; call several delegates in the same turn when the
+      sub-tasks don't depend on each other. Never invent numbers: every figure in the
+      answer must come from a delegate. Answer in the user's language, concise, citing
+      the dates of the data.
+
+  - name: economist
+    description: Brazilian macro data (Selic, CDI, IPCA, IGP-M, USD, EUR) and calculations.
+    provider: ${WORKER_PROVIDER:-local}
+    model: ${WORKER_MODEL:-qwen3.5:9b}
+    tools: [brasil__indicador_economico, calculator]
+    instructions: |
+      You are an economist. Fetch indicators with the tools and use the calculator for
+      any arithmetic (accumulated inflation, real interest...). Reply with the numbers,
+      their reference dates and one line of interpretation.
+
+  - name: company_researcher
+    description: Company records by CNPJ, addresses by CEP, holidays and business days.
+    provider: ${WORKER_PROVIDER:-local}
+    model: ${WORKER_MODEL:-qwen3.5:9b}
+    tools: [brasil__consultar_cnpj, brasil__consultar_cep, brasil__validar_documento, brasil__dias_uteis]
+    instructions: |
+      You look up public registry data. Validate documents before querying. Report only
+      what the tools return.
+
+default_agent: coordinator
+
+limits:
+  tool_timeout_s: 30
+  run_timeout_s: 240
+  max_delegation_depth: 2
+  max_total_tokens: 150000

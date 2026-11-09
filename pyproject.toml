@@ -1,0 +1,62 @@
+[project]
+name = "agent-orchestrator"
+version = "0.1.0"
+description = "Multi-agent orchestration API: supervisor/worker delegation, parallel tool calls, MCP tools, guardrails and tracing."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Victor Gabriel Andrade de Melo", email = "victor.845.melo@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.120",
+    "httpx>=0.28",
+    "mcp>=2.3",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6",
+    "sse-starlette>=2.1",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+anthropic = [
+    "anthropic>=2.7",
+]
+
+[project.scripts]
+agent-orchestrator = "agent_orchestrator.api:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.0",
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+    "types-pyyaml>=6.0.12.20261103",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+strict = true
+packages = ["agent_orchestrator"]
+mypy_path = "src"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
