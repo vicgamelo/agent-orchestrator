@@ -100,3 +100,26 @@ async def test_spans_are_nested() -> None:
     assert spans["agent.a"].parent_id == root.span_id
     assert spans["tool.calculator"].parent_id == spans["agent.a"].span_id
     assert spans["scripted.complete"].input_tokens == 100
+
+
+async def test_empty_final_answer_is_an_error_not_a_success() -> None:
+    """Thinking models can burn the whole max_tokens on reasoning and return no content."""
+    provider = ScriptedProvider({"m": [Step(text="")]})
+    _, events = ctx()
+    result = await agent(provider, []).run("go")
+    assert result.status == "error"
+    assert "empty response" in result.output
+    assert next(e for e in events if e.type == "llm").data["stop_reason"] == "end_turn"
+
+
+async def test_empty_answer_gets_one_nudge_then_recovers() -> None:
+    provider = ScriptedProvider(
+        {"m": [Step(calls=[("calculator", {"expression": "2+2"})]), Step(text=""), Step(text="4")]}
+    )
+    ctx()
+    from agent_orchestrator.tools import BUILTIN_TOOLS
+
+    result = await agent(provider, [BUILTIN_TOOLS["calculator"]()]).run("2+2?")
+    assert (result.status, result.output) == ("completed", "4")
+    nudge = provider.requests[2]["messages"][-1]
+    assert nudge.role == "user" and "final answer" in nudge.content

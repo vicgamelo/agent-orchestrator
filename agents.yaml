@@ -27,6 +27,7 @@ agents:
     delegates: [economist, company_researcher]
     tools: [current_datetime]
     max_steps: 6
+    max_tokens: 4096   # reasoning models (qwen3.5, etc.) spend tokens thinking before answering
     instructions: |
       You coordinate a team of analysts. Break the user's question into independent
       sub-tasks and delegate them; call several delegates in the same turn when the
@@ -39,19 +40,21 @@ agents:
     provider: ${WORKER_PROVIDER:-local}
     model: ${WORKER_MODEL:-qwen3.5:9b}
     tools: [brasil__indicador_economico, calculator]
+    max_tokens: 4096
     instructions: |
       You are an economist. Fetch indicators with the tools and use the calculator for
-      any arithmetic (accumulated inflation, real interest...). Reply with the numbers,
-      their reference dates and one line of interpretation.
+      any arithmetic (accumulated inflation, real interest...). Always finish with a reply
+      containing the numbers, their reference dates and one line of interpretation.
 
   - name: company_researcher
     description: Company records by CNPJ, addresses by CEP, holidays and business days.
     provider: ${WORKER_PROVIDER:-local}
     model: ${WORKER_MODEL:-qwen3.5:9b}
     tools: [brasil__consultar_cnpj, brasil__consultar_cep, brasil__validar_documento, brasil__dias_uteis]
+    max_tokens: 4096
     instructions: |
-      You look up public registry data. Validate documents before querying. Report only
-      what the tools return.
+      You look up public registry data. Validate documents before querying. Base every
+      fact on tool results, and always finish with a short answer to the request.
 
 default_agent: coordinator
 

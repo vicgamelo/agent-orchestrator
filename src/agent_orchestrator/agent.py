@@ -17,6 +17,8 @@ from .tracing import Tracer
 
 EventSink = Callable[["Event"], Awaitable[None]]
 
+NUDGE = "Write your final answer to the user now, based on the tool results above."
+
 
 @dataclass
 class Event:
@@ -79,6 +81,7 @@ class Agent:
         await ctx.emit(Event("agent_start", self.name, ctx.depth, {"task": task}))
 
         with ctx.tracer.span(f"agent.{self.name}", "agent", input=task[:4000]) as agent_span:
+            nudged = False
             for step in range(1, cfg.max_steps + 1):
                 ctx.check_budget()
                 with ctx.tracer.span(f"{self.provider.name}.complete", "llm", provider=self.provider.name) as s:
@@ -107,9 +110,26 @@ class Agent:
                         "llm",
                         self.name,
                         ctx.depth,
-                        {"step": step, "text": resp.text, "tool_calls": [c.name for c in resp.tool_calls]},
+                        {
+                            "step": step,
+                            "text": resp.text,
+                            "tool_calls": [c.name for c in resp.tool_calls],
+                            "stop_reason": resp.stop_reason,
+                        },
                     )
                 )
+
+                if not resp.tool_calls and not resp.text.strip():
+                    # Reasoning models sometimes "think" the answer and emit no content
+                    # (or run out of max_tokens). Nudge once, then give up loudly.
+                    if not nudged and step < cfg.max_steps:
+                        nudged = True
+                        messages.append(Message(role="user", content=NUDGE))
+                        continue
+                    note = f"error: model returned an empty response (stop_reason={resp.stop_reason})"
+                    agent_span.status, agent_span.error = "error", note
+                    await ctx.emit(Event("error", self.name, ctx.depth, {"message": note}))
+                    return AgentResult(note, "error", messages, step)
 
                 if not resp.tool_calls:
                     messages.append(Message(role="assistant", content=resp.text))
