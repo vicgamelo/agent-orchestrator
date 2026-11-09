@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import LLMError, LLMResponse, Message, ToolCall, ToolSpec, Usage
+from .base import LLMError, LLMResponse, Message, ProviderError, ToolCall, ToolSpec, Usage, is_retryable_status
+from .openai_compat import parse_retry_after
 
 
 class AnthropicProvider:
@@ -43,7 +44,7 @@ class AnthropicProvider:
         try:
             resp = await self._client.messages.create(**kwargs)
         except Exception as exc:
-            raise LLMError(f"anthropic: {exc}") from exc
+            raise _classify(exc) from exc
         text = "".join(b.text for b in resp.content if b.type == "text")
         calls = [ToolCall(id=b.id, name=b.name, arguments=dict(b.input)) for b in resp.content if b.type == "tool_use"]
         return LLMResponse(
@@ -53,6 +54,24 @@ class AnthropicProvider:
             model=resp.model,
             stop_reason=resp.stop_reason,
         )
+
+
+def _classify(exc: Exception) -> ProviderError:
+    """Map SDK errors (duck-typed, the SDK is optional) to retryable or not."""
+    status: int | None = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    if status is not None:
+        retryable = is_retryable_status(status, str(exc))
+    else:  # APITimeoutError / APIConnectionError: never got a response
+        retryable = type(exc).__name__ in ("APITimeoutError", "APIConnectionError")
+    return ProviderError(
+        f"anthropic: {exc}",
+        provider="anthropic",
+        status=status,
+        retryable=retryable,
+        retry_after=parse_retry_after(headers.get("retry-after")),
+    )
 
 
 def to_anthropic(messages: list[Message]) -> list[dict[str, Any]]:

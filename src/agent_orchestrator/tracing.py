@@ -43,6 +43,12 @@ class TraceSpan:
     attributes: dict[str, Any] = field(default_factory=dict)
 
 
+def current_span() -> TraceSpan | None:
+    """The innermost open span, for code that wants to annotate it (e.g. which
+    provider of a fallback chain actually answered)."""
+    return _current.get()
+
+
 class Tracer:
     def __init__(self, endpoint: str | None = None, api_key: str = "", project: str = "agent-orchestrator") -> None:
         self.endpoint = endpoint.rstrip("/") if endpoint else None

@@ -69,7 +69,7 @@ def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | N
             {
                 "name": a.name,
                 "description": a.config.description,
-                "model": a.config.model,
+                "model": a.config.model_for(a.config.provider_chain[0]),
                 "provider": a.config.provider,
                 "tools": [{"name": t.name, "source": t.source} for t in a.tools.values()],
                 "default": a.name == o.config.default_agent,

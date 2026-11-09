@@ -3,8 +3,10 @@
 #   coordinator ──► economist          (Banco Central indicators, calculator)
 #               └─► company_researcher (CNPJ, CEP, business days)
 #
-# Providers are swappable per agent: run everything locally on Ollama, or point
-# the coordinator at Claude and keep the workers on a cheap/local model.
+# Providers are swappable per agent: run everything locally on Ollama, point the
+# coordinator at Claude, or use free hosted tiers with a fallback chain:
+#   COORDINATOR_PROVIDER=groq,openrouter  WORKER_PROVIDER=groq,openrouter
+# (see .env.example for the free models that support tool calling).
 
 providers:
   local:
@@ -13,6 +15,16 @@ providers:
   anthropic:
     type: anthropic
     api_key: ${ANTHROPIC_API_KEY:-}
+  groq:
+    type: openai
+    base_url: https://api.groq.com/openai/v1
+    api_key: ${GROQ_API_KEY:-}
+    timeout_s: 30                      # fail over quickly instead of hanging a demo request
+  openrouter:
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY:-}
+    timeout_s: 60
 
 mcp_servers:
   - name: brasil
@@ -23,7 +35,10 @@ agents:
   - name: coordinator
     description: Plans the work, delegates to specialists and writes the final answer.
     provider: ${COORDINATOR_PROVIDER:-local}
-    model: ${COORDINATOR_MODEL:-qwen3.5:9b}
+    model: ${COORDINATOR_MODEL:-qwen3.5:9b}       # local / anthropic
+    models:                                        # used when the chain includes these providers
+      groq: ${GROQ_COORDINATOR_MODEL:-openai/gpt-oss-120b}
+      openrouter: ${OPENROUTER_COORDINATOR_MODEL:-google/gemma-4-31b-it:free}
     delegates: [economist, company_researcher]
     tools: [current_datetime]
     max_steps: 6
@@ -39,6 +54,9 @@ agents:
     description: Brazilian macro data (Selic, CDI, IPCA, IGP-M, USD, EUR) and calculations.
     provider: ${WORKER_PROVIDER:-local}
     model: ${WORKER_MODEL:-qwen3.5:9b}
+    models:
+      groq: ${GROQ_WORKER_MODEL:-openai/gpt-oss-20b}
+      openrouter: ${OPENROUTER_WORKER_MODEL:-google/gemma-4-26b-a4b-it:free}
     tools: [brasil__indicador_economico, calculator]
     max_tokens: 4096
     instructions: |
@@ -50,6 +68,9 @@ agents:
     description: Company records by CNPJ, addresses by CEP, holidays and business days.
     provider: ${WORKER_PROVIDER:-local}
     model: ${WORKER_MODEL:-qwen3.5:9b}
+    models:
+      groq: ${GROQ_WORKER_MODEL:-openai/gpt-oss-20b}
+      openrouter: ${OPENROUTER_WORKER_MODEL:-google/gemma-4-26b-a4b-it:free}
     tools: [brasil__consultar_cnpj, brasil__consultar_cep, brasil__validar_documento, brasil__dias_uteis]
     max_tokens: 4096
     instructions: |

@@ -82,3 +82,43 @@ def test_anthropic_merges_parallel_tool_results_into_one_user_turn() -> None:
     assert [m["role"] for m in out] == ["user", "assistant", "user"]
     assert [b["type"] for b in out[1]["content"]] == ["text", "tool_use", "tool_use"]
     assert [b["tool_use_id"] for b in out[2]["content"]] == ["a", "b"]
+
+
+async def test_openai_compatible_error_body_with_200_is_llm_error() -> None:
+    # OpenRouter can answer 200 with {"error": ...} and no choices; that used to escape as KeyError,
+    # which the agent loop doesn't catch.
+    body = {"error": {"code": 502, "message": "upstream error"}}
+    provider = OpenAICompatibleProvider(
+        "http://x/v1", http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    )
+    with pytest.raises(LLMError, match="upstream error"):
+        await provider.complete(model="m", system="", messages=[], tools=[], max_tokens=1, temperature=0)
+
+
+async def test_anthropic_errors_are_classified_for_fallback() -> None:
+    from types import SimpleNamespace
+
+    from agent_orchestrator.llm.anthropic import AnthropicProvider
+    from agent_orchestrator.llm.base import ProviderError
+
+    class APIStatusError(Exception):
+        def __init__(self, status: int, headers: dict[str, str]) -> None:
+            super().__init__(f"status {status}")
+            self.status_code, self.response = status, SimpleNamespace(headers=headers)
+
+    class APITimeoutError(Exception):
+        pass
+
+    async def call(exc: Exception) -> ProviderError:
+        async def create(**_: object) -> None:
+            raise exc
+
+        provider = AnthropicProvider(client=SimpleNamespace(messages=SimpleNamespace(create=create)))
+        with pytest.raises(ProviderError) as info:
+            await provider.complete(model="m", system="", messages=[], tools=[], max_tokens=1, temperature=0)
+        return info.value
+
+    overloaded = await call(APIStatusError(529, {"retry-after": "3"}))
+    assert overloaded.retryable and overloaded.retry_after == 3.0
+    assert not (await call(APIStatusError(400, {}))).retryable
+    assert (await call(APITimeoutError("t"))).retryable

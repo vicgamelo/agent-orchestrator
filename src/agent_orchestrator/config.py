@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _ENV = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
 
@@ -17,6 +17,7 @@ class ProviderConfig(BaseModel):
     type: Literal["openai", "anthropic"]
     base_url: str | None = None
     api_key: str | None = None
+    timeout_s: float = Field(default=120.0, gt=0)
 
 
 class MCPServerConfig(BaseModel):
@@ -36,14 +37,33 @@ class MCPServerConfig(BaseModel):
 class AgentConfig(BaseModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     description: str
-    provider: str
-    model: str
+    # One provider, or an ordered fallback chain: [groq, openrouter] (or "groq,openrouter" from an env var).
+    provider: str | list[str]
+    model: str | None = None
+    models: dict[str, str] = Field(default_factory=dict)  # per-provider model, wins over `model`
     instructions: str
     tools: list[str] = Field(default_factory=list)  # builtin names or "<mcp_server>__<tool>" or "<mcp_server>__*"
     delegates: list[str] = Field(default_factory=list)  # agents this one can hand work to
     max_steps: int = Field(default=8, ge=1, le=50)
     max_tokens: int = Field(default=1024, ge=16)
     temperature: float = Field(default=0.2, ge=0, le=2)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _split_provider(cls, v: object) -> object:
+        if isinstance(v, str) and "," in v:
+            return [p.strip() for p in v.split(",") if p.strip()]
+        return v
+
+    @property
+    def provider_chain(self) -> list[str]:
+        return [self.provider] if isinstance(self.provider, str) else list(self.provider)
+
+    def model_for(self, provider: str) -> str:
+        model = self.models.get(provider) or self.model
+        if not model:
+            raise ValueError(f"agent {self.name!r} has no model for provider {provider!r}")
+        return model
 
 
 class Limits(BaseModel):
@@ -66,8 +86,13 @@ class AppConfig(BaseModel):
         if self.default_agent not in names:
             raise ValueError(f"default_agent {self.default_agent!r} is not defined")
         for a in self.agents:
-            if a.provider not in self.providers:
-                raise ValueError(f"agent {a.name!r} uses unknown provider {a.provider!r}")
+            chain = a.provider_chain
+            if not chain or len(set(chain)) != len(chain):
+                raise ValueError(f"agent {a.name!r}: provider list must be non-empty and without repeats")
+            for p in chain:
+                if p not in self.providers:
+                    raise ValueError(f"agent {a.name!r} uses unknown provider {p!r}")
+                a.model_for(p)
             for d in a.delegates:
                 if d not in names or d == a.name:
                     raise ValueError(f"agent {a.name!r} has invalid delegate {d!r}")

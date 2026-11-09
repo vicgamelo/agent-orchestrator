@@ -7,11 +7,13 @@ Covers OpenAI itself and every server that speaks the same API: Ollama
 from __future__ import annotations
 
 import json
+import time
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
 
-from .base import LLMError, LLMResponse, Message, ToolCall, ToolSpec, Usage
+from .base import LLMResponse, Message, ProviderError, ToolCall, ToolSpec, Usage, is_retryable_status
 
 
 class OpenAICompatibleProvider:
@@ -53,17 +55,14 @@ class OpenAICompatibleProvider:
                 }
                 for t in tools
             ]
-        try:
-            response = await self._http.post(self._url, json=body)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise LLMError(f"{self.name} returned {exc.response.status_code}: {exc.response.text[:300]}") from exc
-        except httpx.HTTPError as exc:
-            raise LLMError(f"{self.name} request failed: {exc}") from exc
-
-        data = response.json()
+        data = await self._post(body)
+        if not data.get("choices"):
+            # Some gateways (OpenRouter) report upstream failures as 200 + {"error": ...}.
+            err = data.get("error")
+            detail = err.get("message", err) if isinstance(err, dict) else err or str(data)[:300]
+            raise ProviderError(f"{self.name} returned no choices: {detail}", provider=self.name, status=200)
         choice = data["choices"][0]
-        msg = choice["message"]
+        msg = choice.get("message") or {}
         calls: list[ToolCall] = []
         for raw in msg.get("tool_calls") or []:
             fn = raw["function"]
@@ -81,6 +80,55 @@ class OpenAICompatibleProvider:
             model=data.get("model", model),
             stop_reason=choice.get("finish_reason"),
         )
+
+    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Errors before the server starts answering (status >= 400, connect error,
+        timeout waiting for headers) are marked retryable when another provider could
+        help. Once a 200 has started streaming in, failures are not: the request was
+        accepted and may have been billed/counted, so the caller should not replay it."""
+        try:
+            async with self._http.stream("POST", self._url, json=body) as response:
+                if response.status_code >= 400:
+                    text = (await response.aread()).decode(errors="replace")
+                    raise ProviderError(
+                        f"{self.name} returned {response.status_code}: {text[:300]}",
+                        provider=self.name,
+                        status=response.status_code,
+                        retryable=is_retryable_status(response.status_code, text),
+                        retry_after=parse_retry_after(response.headers.get("retry-after")),
+                    )
+                try:
+                    await response.aread()
+                    data = response.json()
+                except (httpx.HTTPError, ValueError) as exc:
+                    raise ProviderError(
+                        f"{self.name} response broke off after it started: {exc!r}",
+                        provider=self.name,
+                        status=response.status_code,
+                    ) from exc
+        except ProviderError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise ProviderError(f"{self.name} timed out: {exc!r}", provider=self.name, retryable=True) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"{self.name} request failed: {exc!r}", provider=self.name, retryable=True) from exc
+        if not isinstance(data, dict):
+            raise ProviderError(f"{self.name} returned unexpected JSON: {str(data)[:300]}", provider=self.name)
+        return data
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """``Retry-After`` is either delta-seconds or an HTTP date."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_openai(m: Message) -> dict[str, Any]:

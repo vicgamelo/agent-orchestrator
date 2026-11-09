@@ -13,6 +13,7 @@ from typing import Any
 from .agent import Agent, AgentResult, BudgetExceeded, Event, EventSink, RunContext, current_run, delegation_tool
 from .config import AgentConfig, AppConfig
 from .llm.base import LLMProvider, Message
+from .llm.fallback import FallbackLLM, Route
 from .mcp_tools import MCPToolset
 from .tools import BUILTIN_TOOLS, Tool
 from .tracing import Tracer
@@ -43,7 +44,10 @@ def build_providers(config: AppConfig) -> dict[str, LLMProvider]:
             providers[name] = AnthropicProvider(api_key=p.api_key or None)
         else:
             providers[name] = OpenAICompatibleProvider(
-                base_url=p.base_url or "https://api.openai.com/v1", api_key=p.api_key or "", name=name
+                base_url=p.base_url or "https://api.openai.com/v1",
+                api_key=p.api_key or "",
+                name=name,
+                timeout=p.timeout_s,
             )
     return providers
 
@@ -89,8 +93,14 @@ class Orchestrator:
                 raise ValueError(f"circular delegation between: {[a.name for a in pending]}")
             for cfg in ready:
                 tools = self._resolve_tools(cfg) + [delegation_tool(self.agents[d]) for d in cfg.delegates]
-                self.agents[cfg.name] = Agent(cfg, self.providers[cfg.provider], tools)
+                self.agents[cfg.name] = Agent(cfg, self._llm_for(cfg), tools)
                 pending.remove(cfg)
+
+    def _llm_for(self, cfg: AgentConfig) -> LLMProvider:
+        chain = cfg.provider_chain
+        if len(chain) == 1:
+            return self.providers[chain[0]]
+        return FallbackLLM([Route(self.providers[p], cfg.model_for(p)) for p in chain])
 
     async def aclose(self) -> None:
         if self._background:

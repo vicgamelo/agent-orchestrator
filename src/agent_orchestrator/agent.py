@@ -87,7 +87,7 @@ class Agent:
                 with ctx.tracer.span(f"{self.provider.name}.complete", "llm", provider=self.provider.name) as s:
                     try:
                         resp = await self.provider.complete(
-                            model=cfg.model,
+                            model=cfg.model_for(cfg.provider_chain[0]),
                             system=cfg.instructions,
                             messages=messages,
                             tools=[t.spec for t in self.tools.values()],

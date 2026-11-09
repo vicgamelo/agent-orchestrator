@@ -27,7 +27,8 @@ Trace shown in [genai-lens](https://github.com/vicgamelo/genai-lens).*
 - **MCP native.** Connect servers over Streamable HTTP or stdio; tools are namespaced
   `<server>__<tool>` and can be granted one by one or with `server__*`.
 - **Provider-agnostic.** Anthropic, OpenAI, or anything OpenAI-compatible (Ollama, vLLM,
-  LM Studio, Groq...). Mix them: Claude as the coordinator, a local model for workers.
+  LM Studio, Groq, OpenRouter...). Mix them: Claude as the coordinator, a local model for
+  workers, or a fallback chain of free tiers (`provider: [groq, openrouter]`).
 - **Guardrails.** Max steps per agent, per-tool timeout, run timeout, delegation depth and a
   token budget shared by the whole run. Tool errors are returned to the model, which can recover.
 - **Observability.** Nested spans (run → agent → LLM call / tool → delegated agent) exported
@@ -111,6 +112,31 @@ startup, so a typo fails fast instead of in the middle of a run.
 | `ORCH_API_KEYS` | Comma separated keys for `X-API-Key` (empty = open, local dev only) |
 | `GENAI_LENS_ENDPOINT`, `GENAI_LENS_API_KEY` | Export traces to genai-lens |
 
+### Free providers and fallback
+
+The public demo runs on free API tiers only: Groq first, OpenRouter `:free` models as backup.
+Give an agent an ordered list of providers and a model per provider:
+
+```yaml
+  - name: coordinator
+    provider: [groq, openrouter]        # or COORDINATOR_PROVIDER=groq,openrouter
+    models:
+      groq: openai/gpt-oss-120b
+      openrouter: google/gemma-4-31b-it:free
+```
+
+A 429, 5xx (or Groq's 413 for the tokens-per-minute limit), timeout or connection error
+moves on to the next provider. A short `Retry-After` (up to 5s) is waited out and the same
+provider retried once; a longer one puts it on cooldown so the next calls skip it. A 400/401
+does not fail over (another provider won't fix a bad request or a missing key), and neither
+does an answer that broke off after the provider started sending it. When every provider
+fails, the error lists each one tried and why. The LLM span records which provider answered
+(`provider`) and the ones that failed (`fallback.failed`).
+
+Copy [`.env.example`](.env.example) for the suggested free models with tool calling and their
+limits (Groq: ~30 req/min and 1K req/day per model; OpenRouter free: 20 req/min and 50/day
+without purchased credits).
+
 ## API
 
 | Method | Path | |
@@ -140,7 +166,7 @@ src/agent_orchestrator/
 ├── tracing.py        # nested spans → genai-lens
 ├── config.py         # YAML schema + validation
 ├── api.py            # FastAPI + SSE
-└── llm/              # anthropic, openai-compatible, scripted
+└── llm/              # anthropic, openai-compatible, fallback chain, scripted
 ```
 
 ## License
