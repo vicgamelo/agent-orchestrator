@@ -296,3 +296,45 @@ def test_api_key_required() -> None:
         assert c.get("/v1/studio").status_code == 401
         assert c.post("/v1/studio/runs", json=body()).status_code == 401
         assert c.get("/v1/studio", headers={"X-API-Key": "k"}).status_code == 200
+
+
+async def test_provider_key_unset_in_yaml_is_unavailable(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``api_key: ${VAR:-}`` with VAR unset is YAML null, not "": still a missing key."""
+    from agent_orchestrator.config import load_config
+
+    monkeypatch.delenv("STUDIO_TEST_KEY", raising=False)
+    path = tmp_path / "agents.yaml"
+    path.write_text(
+        """
+providers:
+  local: {type: openai, base_url: "http://unused"}
+  hosted: {type: openai, base_url: "http://unused", api_key: "${STUDIO_TEST_KEY:-}"}
+  bare:
+    type: openai
+    base_url: http://unused
+    api_key: ${STUDIO_TEST_KEY:-}
+agents:
+  - {name: a, description: d, provider: "local,hosted", model: m, instructions: i}
+default_agent: a
+studio:
+  models:
+    - {id: local, label: L, provider: local, model: m}
+    - {id: hosted, label: H, provider: hosted, model: m}
+    - {id: bare, label: B, provider: bare, model: m}
+"""
+    )
+    cfg = load_config(path)
+    assert cfg.providers["bare"].api_key is None  # what YAML makes of the empty expansion
+    assert cfg.providers["bare"].key_missing
+    assert cfg.providers["hosted"].key_missing
+    assert not cfg.providers["local"].key_missing  # no api_key at all: a server that takes none
+    p = ScriptedProvider({"m": [Step(text="ok")]})
+    orch = Orchestrator(cfg, {"local": p, "hosted": p, "bare": p})
+    await orch.start()
+    try:
+        available = {m["id"]: m["available"] for m in orch.studio_catalog()["models"]}
+        assert available == {"local": True, "hosted": False, "bare": False}
+        # the team's fallback chain drops the provider without a key too
+        assert orch.agents["a"].provider is p
+    finally:
+        await orch.aclose()

@@ -24,6 +24,12 @@ class ProviderConfig(BaseModel):
     # the whole max_tokens thinking and answering nothing.
     reasoning_effort: Literal["low", "medium", "high"] | None = None
 
+    @property
+    def key_missing(self) -> bool:
+        """``api_key`` is in the config but empty: ``${VAR:-}`` with VAR unset (YAML reads it as null).
+        A provider without the field at all (a local server) needs no key."""
+        return "api_key" in self.model_fields_set and not self.api_key
+
 
 class MCPServerConfig(BaseModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")

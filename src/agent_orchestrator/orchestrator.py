@@ -155,9 +155,9 @@ class Orchestrator:
         return out
 
     def _llm_for(self, cfg: AgentConfig) -> LLMProvider:
-        # A provider whose api_key expanded to "" (OPENROUTER_API_KEY unset) would only answer 401:
+        # A provider whose api_key expanded to nothing (OPENROUTER_API_KEY unset) would only answer 401:
         # drop it from the chain. With no key anywhere, keep the chain so the error says which is missing.
-        chain = [p for p in cfg.provider_chain if self.config.providers[p].api_key != ""] or cfg.provider_chain
+        chain = [p for p in cfg.provider_chain if not self.config.providers[p].key_missing] or cfg.provider_chain
         if chain == [cfg.provider_chain[0]]:
             return self.providers[chain[0]]  # the agent already asks for this provider's model
         return FallbackLLM([Route(self.providers[p], cfg.model_for(p)) for p in chain])
@@ -306,8 +306,7 @@ class Orchestrator:
         return await self._execute(agent, task, sink=sink, attributes=attributes)
 
     def _provider_ready(self, provider: str) -> bool:
-        # api_key "" means the env var was unset (see _llm_for); None means the provider takes no key.
-        return self.config.providers[provider].api_key != "" and provider in self.providers
+        return not self.config.providers[provider].key_missing and provider in self.providers
 
     # ------------------------------------------------------------------ one run
 
