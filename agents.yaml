@@ -20,6 +20,7 @@ providers:
     base_url: https://api.groq.com/openai/v1
     api_key: ${GROQ_API_KEY:-}
     timeout_s: 30                      # fail over quickly instead of hanging a demo request
+    reasoning_effort: low              # gpt-oss otherwise can spend all of max_tokens thinking
   openrouter:
     type: openai
     base_url: https://openrouter.ai/api/v1
@@ -47,9 +48,10 @@ agents:
     instructions: |
       You coordinate a team of analysts. Break the user's question into independent
       sub-tasks and delegate them; call several delegates in the same turn when the
-      sub-tasks don't depend on each other. Never invent numbers: every figure in the
-      answer must come from a delegate. Answer in the user's language, concise, citing
-      the dates of the data.
+      sub-tasks don't depend on each other. Never invent numbers or sources: every figure
+      in the answer must come from a delegate. If the team has no tool for the question, or
+      a delegate fails, say plainly what you couldn't fetch; don't fill the gap from memory.
+      Answer in the user's language, concise, citing the dates of the data.
 
   - name: economist
     description: Brazilian macro data (Selic, CDI, IPCA, IGP-M, USD, EUR) and calculations.
@@ -63,7 +65,8 @@ agents:
     instructions: |
       You are an economist. Fetch indicators with the tools and use the calculator for
       any arithmetic (accumulated inflation, real interest...). Always finish with a reply
-      containing the numbers, their reference dates and one line of interpretation.
+      containing the numbers, their reference dates and one line of interpretation. If no
+      tool covers the request, say so in one sentence instead of guessing.
 
   - name: company_researcher
     description: Company records by CNPJ, addresses by CEP, holidays and business days.

@@ -24,9 +24,11 @@ class OpenAICompatibleProvider:
         *,
         name: str = "openai",
         timeout: float = 120.0,
+        reasoning_effort: str | None = None,
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self.name = name
+        self.reasoning_effort = reasoning_effort
         self._url = base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._http = http or httpx.AsyncClient(timeout=timeout, headers=headers)
@@ -47,6 +49,8 @@ class OpenAICompatibleProvider:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if self.reasoning_effort:
+            body["reasoning_effort"] = self.reasoning_effort
         if tools:
             body["tools"] = [
                 {

@@ -122,3 +122,20 @@ async def test_anthropic_errors_are_classified_for_fallback() -> None:
     assert overloaded.retryable and overloaded.retry_after == 3.0
     assert not (await call(APIStatusError(400, {}))).retryable
     assert (await call(APITimeoutError("t"))).retryable
+
+
+async def test_reasoning_effort_is_sent_when_configured() -> None:
+    """gpt-oss on Groq spent the whole max_tokens reasoning; the provider config can lower the effort."""
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]})
+
+    for effort in ("low", None):
+        provider = OpenAICompatibleProvider(
+            "http://groq/v1", reasoning_effort=effort, http=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        )
+        await provider.complete(model="m", system="s", messages=[], tools=[], max_tokens=10, temperature=0)
+    assert bodies[0]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in bodies[1]

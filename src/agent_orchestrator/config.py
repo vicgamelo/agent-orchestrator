@@ -20,6 +20,9 @@ class ProviderConfig(BaseModel):
     timeout_s: float = Field(default=120.0, gt=0)
     # Refuse to start with a model that isn't ``...:free`` (OpenRouter bills the others against credits).
     free_models_only: bool = False
+    # Sent as ``reasoning_effort`` (Groq / OpenAI reasoning models). "low" keeps gpt-oss from spending
+    # the whole max_tokens thinking and answering nothing.
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
 class MCPServerConfig(BaseModel):

@@ -164,3 +164,46 @@ async def test_unknown_tool_reference_fails_at_startup() -> None:
     orch = Orchestrator(config, {"fake": ScriptedProvider({})})
     with pytest.raises(ValueError, match="unknown tool 'nope'"):
         await orch.start()
+
+
+def _chain_orch(groq_key: str, openrouter_key: str) -> tuple[Orchestrator, dict[str, ScriptedProvider]]:
+    providers = {
+        "groq": ScriptedProvider({"g": [Step(text="g")]}),
+        "openrouter": ScriptedProvider({"o:free": [Step(text="o")]}),
+    }
+    cfg = make_config(
+        providers={
+            "groq": {"type": "openai", "api_key": groq_key},
+            "openrouter": {"type": "openai", "api_key": openrouter_key},
+        },
+        agents=[
+            {
+                "name": "a",
+                "description": "d",
+                "instructions": "i",
+                "provider": "groq,openrouter",
+                "models": {"groq": "g", "openrouter": "o:free"},
+            }
+        ],
+        default_agent="a",
+    )
+    return Orchestrator(cfg, dict(providers)), providers
+
+
+def test_provider_with_empty_key_leaves_the_chain() -> None:
+    """OPENROUTER_API_KEY unset: falling back to it only adds a 401 to every rate-limited call."""
+    orch, providers = _chain_orch("gsk", "")
+    assert orch._llm_for(orch.config.agents[0]) is providers["groq"]
+
+
+def test_chain_without_any_key_is_kept_as_is() -> None:
+    orch, _ = _chain_orch("", "")
+    llm = orch._llm_for(orch.config.agents[0])
+    assert [r.provider.name for r in llm.routes] == ["scripted", "scripted"]  # type: ignore[attr-defined]
+
+
+async def test_first_provider_without_key_uses_the_next_ones_model() -> None:
+    orch, providers = _chain_orch("", "sk-or")
+    llm = orch._llm_for(orch.config.agents[0])
+    await llm.complete(model="g", system="s", messages=[], tools=[], max_tokens=10, temperature=0)
+    assert providers["openrouter"].requests[0]["model"] == "o:free"

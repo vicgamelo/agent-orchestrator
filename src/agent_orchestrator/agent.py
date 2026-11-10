@@ -121,12 +121,18 @@ class Agent:
 
                 if not resp.tool_calls and not resp.text.strip():
                     # Reasoning models sometimes "think" the answer and emit no content
-                    # (or run out of max_tokens). Nudge once, then give up loudly.
-                    if not nudged and step < cfg.max_steps:
+                    # (or run out of max_tokens). Nudge once, then give up loudly. Cut off by
+                    # max_tokens, a nudge would only burn the same budget again.
+                    cut = resp.stop_reason in ("length", "max_tokens")
+                    if not cut and not nudged and step < cfg.max_steps:
                         nudged = True
                         messages.append(Message(role="user", content=NUDGE))
                         continue
-                    note = f"error: model returned an empty response (stop_reason={resp.stop_reason})"
+                    note = (
+                        f"error: model spent all max_tokens ({cfg.max_tokens}) reasoning without answering"
+                        if cut
+                        else f"error: model returned an empty response (stop_reason={resp.stop_reason})"
+                    )
                     agent_span.status, agent_span.error = "error", note
                     await ctx.emit(Event("error", self.name, ctx.depth, {"message": note}))
                     return AgentResult(note, "error", messages, step)

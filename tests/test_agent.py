@@ -123,3 +123,13 @@ async def test_empty_answer_gets_one_nudge_then_recovers() -> None:
     assert (result.status, result.output) == ("completed", "4")
     nudge = provider.requests[2]["messages"][-1]
     assert nudge.role == "user" and "final answer" in nudge.content
+
+
+async def test_empty_answer_cut_by_max_tokens_is_not_nudged() -> None:
+    """stop_reason=length: the model spent max_tokens thinking; a nudge only burns the same budget again."""
+    provider = ScriptedProvider({"m": [Step(text="", stop_reason="length"), Step(text="never reached")]})
+    ctx()
+    result = await agent(provider, []).run("go")
+    assert result.status == "error"
+    assert "max_tokens" in result.output
+    assert len(provider.requests) == 1

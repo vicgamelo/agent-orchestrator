@@ -48,6 +48,7 @@ def build_providers(config: AppConfig) -> dict[str, LLMProvider]:
                 api_key=p.api_key or "",
                 name=name,
                 timeout=p.timeout_s,
+                reasoning_effort=p.reasoning_effort,
             )
     return providers
 
@@ -97,9 +98,11 @@ class Orchestrator:
                 pending.remove(cfg)
 
     def _llm_for(self, cfg: AgentConfig) -> LLMProvider:
-        chain = cfg.provider_chain
-        if len(chain) == 1:
-            return self.providers[chain[0]]
+        # A provider whose api_key expanded to "" (OPENROUTER_API_KEY unset) would only answer 401:
+        # drop it from the chain. With no key anywhere, keep the chain so the error says which is missing.
+        chain = [p for p in cfg.provider_chain if self.config.providers[p].api_key != ""] or cfg.provider_chain
+        if chain == [cfg.provider_chain[0]]:
+            return self.providers[chain[0]]  # the agent already asks for this provider's model
         return FallbackLLM([Route(self.providers[p], cfg.model_for(p)) for p in chain])
 
     async def aclose(self) -> None:

@@ -20,6 +20,7 @@ from .base import LLMResponse, Message, ToolCall, ToolSpec, Usage
 class Step:
     text: str = ""
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    stop_reason: str | None = None  # default: tool_use / end_turn
 
 
 class ScriptedProvider:
@@ -54,5 +55,5 @@ class ScriptedProvider:
             tool_calls=calls,
             usage=Usage(input_tokens=100, output_tokens=20),
             model=model,
-            stop_reason="tool_use" if calls else "end_turn",
+            stop_reason=step.stop_reason or ("tool_use" if calls else "end_turn"),
         )
