@@ -15,6 +15,18 @@ def test_example_config_loads_with_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.default_agent == "coordinator"
     assert {a.name: a.model for a in cfg.agents}["economist"] == "llama3.2"
     assert cfg.mcp_servers[0].url == "https://mcp.vgmelo.tech/mcp"
+    assert [s.name for s in cfg.mcp_servers] == ["brasil", "noticias", "normas", "agenda"]
+    coordinator = next(a for a in cfg.agents if a.name == "coordinator")
+    assert coordinator.delegates == [
+        "economist",
+        "company_researcher",
+        "news_researcher",
+        "pix_specialist",
+        "scheduler",
+    ]
+    assert "{team}" in coordinator.instructions
+    scheduler = next(a for a in cfg.agents if a.name == "scheduler")
+    assert scheduler.tools == ["agenda__horarios_livres"]  # lists free times; never books
 
 
 def test_rejects_unknown_delegate() -> None:

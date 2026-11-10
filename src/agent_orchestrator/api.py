@@ -24,6 +24,10 @@ class RunRequest(BaseModel):
     agent: str | None = None
     session_id: str | None = Field(default=None, max_length=100)
     include_events: bool = False
+    # MCP servers on for this run; omitted means all. Agents left without tools leave the team.
+    servers: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=40)]] | None = Field(
+        default=None, max_length=10
+    )
 
 
 def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | None = None) -> FastAPI:
@@ -55,9 +59,14 @@ def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | N
 
     Orch = Annotated[Orchestrator, Depends(orch)]
 
-    def check_agent(o: Orchestrator, name: str | None) -> None:
-        if name and name not in o.agents:
-            raise HTTPException(404, f"unknown agent {name!r}; available: {sorted(o.agents)}")
+    def check_run(o: Orchestrator, req: RunRequest) -> None:
+        try:
+            team = o.team(req.servers)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        name = req.agent or o.config.default_agent
+        if name not in team:
+            raise HTTPException(404, f"agent {name!r} not available; available: {sorted(team)}")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -77,15 +86,19 @@ def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | N
             for a in o.agents.values()
         ]
 
+    @app.get("/v1/servers", dependencies=[Depends(auth)])
+    def list_servers(o: Orch) -> list[dict[str, Any]]:
+        return o.servers()
+
     @app.post("/v1/runs", dependencies=[Depends(auth)])
     async def create_run(req: RunRequest, o: Orch) -> dict[str, Any]:
-        check_agent(o, req.agent)
-        rec = await o.run(req.input, agent=req.agent, session_id=req.session_id)
+        check_run(o, req)
+        rec = await o.run(req.input, agent=req.agent, session_id=req.session_id, servers=req.servers)
         return _public(rec, req.include_events)
 
     @app.post("/v1/runs/stream", dependencies=[Depends(auth)])
     async def stream_run(req: RunRequest, o: Orch) -> EventSourceResponse:
-        check_agent(o, req.agent)
+        check_run(o, req)
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
         async def sink(event: Event) -> None:
@@ -93,7 +106,7 @@ def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | N
 
         async def produce() -> None:
             try:
-                rec = await o.run(req.input, agent=req.agent, session_id=req.session_id, sink=sink)
+                rec = await o.run(req.input, agent=req.agent, session_id=req.session_id, sink=sink, servers=req.servers)
                 await queue.put({"event": "done", "data": json.dumps(_public(rec, False), ensure_ascii=False)})
             finally:
                 await queue.put(None)

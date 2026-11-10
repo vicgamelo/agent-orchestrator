@@ -43,7 +43,9 @@ class ScriptedProvider:
         max_tokens: int,
         temperature: float,
     ) -> LLMResponse:
-        self.requests.append({"model": model, "messages": list(messages), "tools": [t.name for t in tools]})
+        self.requests.append(
+            {"model": model, "system": system, "messages": list(messages), "tools": [t.name for t in tools]}
+        )
         if self.delay:
             await asyncio.sleep(self.delay)
         script = self._scripts[model]

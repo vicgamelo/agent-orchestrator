@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 import time
@@ -17,6 +18,11 @@ from .llm.fallback import FallbackLLM, Route
 from .mcp_tools import MCPToolset
 from .tools import BUILTIN_TOOLS, Tool
 from .tracing import Tracer
+
+logger = logging.getLogger(__name__)
+
+# Placeholder in an agent's instructions, replaced by the delegates available in the run.
+TEAM = "{team}"
 
 
 @dataclass
@@ -70,7 +76,11 @@ class Orchestrator:
             endpoint=os.getenv("GENAI_LENS_ENDPOINT"), api_key=os.getenv("GENAI_LENS_API_KEY", "")
         )
         self.mcp = MCPToolset()
-        self.agents: dict[str, Agent] = {}
+        self.agents: dict[str, Agent] = {}  # the team with every connected MCP server on
+        self.servers_up: set[str] = set()
+        self._own_tools: dict[str, list[Tool]] = {}  # resolved tools of each agent, without delegation
+        self._needs_mcp: dict[str, bool] = {}  # agents that only make sense with their MCP tools
+        self._views: dict[frozenset[str], dict[str, Agent]] = {}
         self._extra = {t.name: t for t in extra_tools or []}
         self.runs: OrderedDict[str, RunRecord] = OrderedDict()
         self.sessions: OrderedDict[str, list[Message]] = OrderedDict()
@@ -79,23 +89,70 @@ class Orchestrator:
 
     async def start(self, mcp_targets: dict[str, Any] | None = None) -> None:
         """Connect MCP servers and build agents. ``mcp_targets`` overrides how a
-        server is reached (e.g. an in-process server in tests)."""
+        server is reached (e.g. an in-process server in tests). A server that can't be reached is
+        logged and left out: its tools, and the agents that depend only on them, are unavailable."""
         for server in self.config.mcp_servers:
-            if mcp_targets and server.name in mcp_targets:
-                await self.mcp.connect(server.name, mcp_targets[server.name])
-            else:
-                await self.mcp.connect_config(server)
+            try:
+                if mcp_targets and server.name in mcp_targets:
+                    await self.mcp.connect(server.name, mcp_targets[server.name])
+                else:
+                    await self.mcp.connect_config(server)
+            except Exception as exc:
+                logger.warning("mcp server %s unavailable: %s", server.name, exc)
+                continue
+            self.servers_up.add(server.name)
 
+        for cfg in self.config.agents:
+            self._own_tools[cfg.name] = self._resolve_tools(cfg)
+            self._needs_mcp[cfg.name] = any("__" in ref for ref in cfg.tools)
+        self.agents = self.team(None)
+        if self.config.default_agent not in self.agents:
+            raise ValueError(f"default agent {self.config.default_agent!r} has no tools available")
+
+    def team(self, servers: list[str] | None) -> dict[str, Agent]:
+        """The agents of a run with only ``servers`` on (None: every connected server). A worker
+        whose MCP tools are all off leaves the team, and its supervisors stop seeing it."""
+        if servers is not None:
+            unknown = set(servers) - {s.name for s in self.config.mcp_servers}
+            if unknown:
+                raise ValueError(f"unknown MCP servers: {sorted(unknown)}")
+        enabled = frozenset(self.servers_up if servers is None else set(servers) & self.servers_up)
+        if enabled not in self._views:
+            self._views[enabled] = self._build_team(enabled)
+        return self._views[enabled]
+
+    def _build_team(self, enabled: frozenset[str]) -> dict[str, Agent]:
+        team: dict[str, Agent] = {}
         # Workers first, so supervisors can wrap them as delegation tools.
         pending = list(self.config.agents)
         while pending:
-            ready = [a for a in pending if all(d in self.agents for d in a.delegates)]
+            ready = [a for a in pending if all(d not in {p.name for p in pending} for d in a.delegates)]
             if not ready:
                 raise ValueError(f"circular delegation between: {[a.name for a in pending]}")
             for cfg in ready:
-                tools = self._resolve_tools(cfg) + [delegation_tool(self.agents[d]) for d in cfg.delegates]
-                self.agents[cfg.name] = Agent(cfg, self._llm_for(cfg), tools)
                 pending.remove(cfg)
+                tools = [
+                    t for t in self._own_tools[cfg.name] if not t.source.startswith("mcp:") or t.source[4:] in enabled
+                ]
+                if self._needs_mcp[cfg.name] and not any(t.source.startswith("mcp:") for t in tools):
+                    continue
+                workers = [team[d] for d in cfg.delegates if d in team]
+                if TEAM in cfg.instructions:
+                    roster = "\n".join(f"- {w.name}: {w.config.description}" for w in workers) or "- (nobody)"
+                    cfg = cfg.model_copy(update={"instructions": cfg.instructions.replace(TEAM, roster)})
+                team[cfg.name] = Agent(cfg, self._llm_for(cfg), tools + [delegation_tool(w) for w in workers])
+        return team
+
+    def servers(self) -> list[dict[str, Any]]:
+        """MCP servers, whether they are up, their tools and the agents that use them."""
+        out = []
+        for server in self.config.mcp_servers:
+            prefix = f"{server.name}__"
+            tools = sorted(name.removeprefix(prefix) for name in self.mcp.tools if name.startswith(prefix))
+            source = f"mcp:{server.name}"
+            agents = [a.name for a in self.config.agents if any(t.source == source for t in self._own_tools[a.name])]
+            out.append({"name": server.name, "up": server.name in self.servers_up, "tools": tools, "agents": agents})
+        return out
 
     def _llm_for(self, cfg: AgentConfig) -> LLMProvider:
         # A provider whose api_key expanded to "" (OPENROUTER_API_KEY unset) would only answer 401:
@@ -112,7 +169,11 @@ class Orchestrator:
 
     def _resolve_tools(self, cfg: AgentConfig) -> list[Tool]:
         tools: list[Tool] = []
+        configured = {s.name for s in self.config.mcp_servers}
         for ref in cfg.tools:
+            server = ref.split("__", 1)[0] if "__" in ref else None
+            if server in configured and server not in self.servers_up:
+                continue  # that server is down; the agent runs without it (or leaves the team)
             if ref in self._extra:
                 tools.append(self._extra[ref])
             elif ref in BUILTIN_TOOLS:
@@ -136,9 +197,13 @@ class Orchestrator:
         agent: str | None = None,
         session_id: str | None = None,
         sink: EventSink | None = None,
+        servers: list[str] | None = None,
     ) -> RunRecord:
+        """``servers``: MCP servers on for this run (None: all). Raises ValueError for an unknown
+        server and KeyError for an agent that isn't in the team (unknown, or all its tools off)."""
         name = agent or self.config.default_agent
-        if name not in self.agents:
+        agents = self.team(servers)
+        if name not in agents:
             raise KeyError(name)
         run_id = "run_" + secrets.token_hex(8)
         events: list[dict[str, Any]] = []
@@ -157,9 +222,11 @@ class Orchestrator:
             with self.tracer.span(f"run.{name}", "chain", input=task[:4000]) as root:
                 trace_id = root.trace_id
                 root.attributes["run_id"] = run_id
+                if servers is not None:
+                    root.attributes["mcp_servers"] = ",".join(sorted(servers))
                 try:
                     result = await asyncio.wait_for(
-                        self.agents[name].run(task, history), timeout=self.config.limits.run_timeout_s
+                        agents[name].run(task, history), timeout=self.config.limits.run_timeout_s
                     )
                 except TimeoutError:
                     result = AgentResult(
