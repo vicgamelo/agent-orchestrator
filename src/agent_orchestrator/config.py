@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _ENV = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
 
@@ -78,18 +78,62 @@ class Limits(BaseModel):
     max_total_tokens: int = 200_000
 
 
+class StudioModel(BaseModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=40)  # what callers send
+    label: str
+    provider: str
+    model: str
+    enabled: bool = True  # e.g. ${STUDIO_LOCAL:-false} for an Ollama model only on a dev machine
+
+
+class StudioConfig(BaseModel):
+    """Agents written by API callers (the agent studio): one agent, no delegation, only these
+    models and tools, and tighter limits than the configured team."""
+
+    models: list[StudioModel] = Field(min_length=1)
+    tools: list[str] = Field(default_factory=list)  # same refs as an agent's `tools`
+    templates: list[str] = Field(default_factory=list)  # configured agents offered as starting points
+    max_steps: int = Field(default=6, ge=1, le=20)
+    max_tokens: int = Field(default=2048, ge=16)
+    instructions_max_chars: int = Field(default=4000, ge=100)
+
+
+class StudioAgent(BaseModel):
+    """An agent sent with the request. The orchestrator checks it against ``StudioConfig``."""
+
+    model_config = ConfigDict(extra="forbid")
+    instructions: str = Field(min_length=1, max_length=20_000)
+    model: str = Field(max_length=40)  # a StudioModel id
+    tools: list[str] = Field(default_factory=list, max_length=40)
+    temperature: float = Field(default=0.2, ge=0, le=1.5)
+    max_steps: int = Field(default=4, ge=1, le=20)
+
+
 class AppConfig(BaseModel):
     providers: dict[str, ProviderConfig]
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     agents: list[AgentConfig]
     default_agent: str
     limits: Limits = Field(default_factory=Limits)
+    studio: StudioConfig | None = None
 
     @model_validator(mode="after")
     def _check_references(self) -> AppConfig:
         names = {a.name for a in self.agents}
         if self.default_agent not in names:
             raise ValueError(f"default_agent {self.default_agent!r} is not defined")
+        if self.studio:
+            ids = [m.id for m in self.studio.models]
+            if len(set(ids)) != len(ids):
+                raise ValueError("studio: repeated model ids")
+            for m in self.studio.models:
+                if m.provider not in self.providers:
+                    raise ValueError(f"studio model {m.id!r} uses unknown provider {m.provider!r}")
+                if self.providers[m.provider].free_models_only and not m.model.endswith(":free"):
+                    raise ValueError(f"studio model {m.id!r}: provider {m.provider!r} only takes ':free' models")
+            for t in self.studio.templates:
+                if t not in names:
+                    raise ValueError(f"studio template {t!r} is not a configured agent")
         for a in self.agents:
             chain = a.provider_chain
             if not chain or len(set(chain)) != len(chain):

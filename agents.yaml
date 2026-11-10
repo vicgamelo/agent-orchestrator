@@ -151,3 +151,34 @@ limits:
   run_timeout_s: 240
   max_delegation_depth: 2
   max_total_tokens: 150000
+
+# Agent studio: callers write one agent (instructions, model, tools) and run it. No delegation,
+# only the models and tools below, and the limits here on top of the ones above.
+studio:
+  models:
+    - id: gpt-oss-120b
+      label: GPT-OSS 120B · Groq
+      provider: groq
+      model: openai/gpt-oss-120b
+    - id: gpt-oss-20b
+      label: GPT-OSS 20B · Groq
+      provider: groq
+      model: openai/gpt-oss-20b
+    - id: qwen3.8-27b
+      label: Qwen 3.8 27B · Groq
+      provider: groq
+      model: qwen/qwen3.8-27b
+    - id: gemma-4-31b
+      label: Gemma 4 31B · OpenRouter
+      provider: openrouter
+      model: google/gemma-4-31b-it:free
+    - id: local
+      label: ${WORKER_MODEL:-qwen3.5:9b} · Ollama
+      provider: local
+      model: ${WORKER_MODEL:-qwen3.5:9b}
+      enabled: ${STUDIO_LOCAL:-false}   # only on a machine running Ollama
+  tools: [calculator, current_datetime, brasil__*, noticias__*, normas__*, agenda__*]
+  templates: [economist, company_researcher, news_researcher, pix_specialist, scheduler]
+  max_steps: 6
+  max_tokens: 2048
+  instructions_max_chars: 4000

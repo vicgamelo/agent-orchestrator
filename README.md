@@ -142,9 +142,18 @@ without purchased credits).
 | Method | Path | |
 | --- | --- | --- |
 | `GET` | `/v1/agents` | Agents, models and their tools |
-| `POST` | `/v1/runs` | `{input, agent?, session_id?, include_events?}` → output, status, usage, trace_id |
+| `GET` | `/v1/servers` | MCP servers, whether they are up and the agents each one feeds |
+| `POST` | `/v1/runs` | `{input, agent?, session_id?, servers?, include_events?}` → output, status, usage, trace_id |
 | `POST` | `/v1/runs/stream` | Same, as Server-Sent Events |
 | `GET` | `/v1/runs/{run_id}` | A past run with its events |
+| `GET` | `/v1/studio` | Agent studio: models, tools, starting templates and limits |
+| `POST` | `/v1/studio/runs` | `{input, agent: {instructions, model, tools, temperature?, max_steps?}}`: runs an agent the caller wrote |
+| `POST` | `/v1/studio/runs/stream` | Same, as Server-Sent Events |
+
+The studio (`studio:` in `agents.yaml`) runs a single agent written by the caller, with no
+delegation. Only the listed models and tools can be picked, and the studio's own limits apply on top
+of the global ones: steps, `max_tokens` and the length of the instructions. A model whose provider has no
+API key is listed as unavailable.
 
 ## Development
 

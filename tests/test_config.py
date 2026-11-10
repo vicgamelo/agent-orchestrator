@@ -29,6 +29,23 @@ def test_example_config_loads_with_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert scheduler.tools == ["agenda__horarios_livres"]  # lists free times; never books
 
 
+def test_example_studio_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STUDIO_LOCAL", raising=False)
+    cfg = load_config(Path(__file__).parent.parent / "agents.yaml")
+    assert cfg.studio is not None
+    models = {m.id: m for m in cfg.studio.models}
+    assert models["gpt-oss-120b"].provider == "groq"
+    assert models["gemma-4-31b"].model.endswith(":free")
+    assert not models["local"].enabled  # Ollama only where STUDIO_LOCAL=true
+    # the studio never gets delegation or the coordinator
+    assert "coordinator" not in cfg.studio.templates
+    assert not any(t.startswith("delegate_to_") for t in cfg.studio.tools)
+    monkeypatch.setenv("STUDIO_LOCAL", "true")
+    cfg = load_config(Path(__file__).parent.parent / "agents.yaml")
+    assert cfg.studio is not None
+    assert next(m for m in cfg.studio.models if m.id == "local").enabled
+
+
 def test_rejects_unknown_delegate() -> None:
     with pytest.raises(ValidationError, match="invalid delegate"):
         make_config(

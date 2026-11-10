@@ -5,7 +5,7 @@ import dataclasses
 import hmac
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from . import __version__
 from .agent import Event
-from .config import load_config
+from .config import StudioAgent, load_config
 from .orchestrator import Orchestrator, RunRecord, build_providers
 
 
@@ -28,6 +28,12 @@ class RunRequest(BaseModel):
     servers: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=40)]] | None = Field(
         default=None, max_length=10
     )
+
+
+class StudioRunRequest(BaseModel):
+    input: str = Field(min_length=1, max_length=20_000)
+    agent: StudioAgent
+    include_events: bool = False
 
 
 def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | None = None) -> FastAPI:
@@ -99,28 +105,36 @@ def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | N
     @app.post("/v1/runs/stream", dependencies=[Depends(auth)])
     async def stream_run(req: RunRequest, o: Orch) -> EventSourceResponse:
         check_run(o, req)
-        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        return _stream(
+            lambda sink: o.run(req.input, agent=req.agent, session_id=req.session_id, sink=sink, servers=req.servers)
+        )
 
-        async def sink(event: Event) -> None:
-            await queue.put({"event": event.type, "data": json.dumps(dataclasses.asdict(event), ensure_ascii=False)})
+    # ---------------------------------------------------------------- studio: agents written by the caller
 
-        async def produce() -> None:
-            try:
-                rec = await o.run(req.input, agent=req.agent, session_id=req.session_id, sink=sink, servers=req.servers)
-                await queue.put({"event": "done", "data": json.dumps(_public(rec, False), ensure_ascii=False)})
-            finally:
-                await queue.put(None)
+    def studio_check(o: Orchestrator, req: StudioRunRequest) -> None:
+        try:
+            o.studio_agent(req.agent)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
-        async def events() -> AsyncIterator[dict[str, Any]]:
-            task = asyncio.create_task(produce())
-            try:
-                while (item := await queue.get()) is not None:
-                    yield item
-            finally:
-                if not task.done():
-                    task.cancel()
+    @app.get("/v1/studio", dependencies=[Depends(auth)])
+    def studio_catalog(o: Orch) -> dict[str, Any]:
+        try:
+            return o.studio_catalog()
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
-        return EventSourceResponse(events())
+    @app.post("/v1/studio/runs", dependencies=[Depends(auth)])
+    async def studio_run(req: StudioRunRequest, o: Orch) -> dict[str, Any]:
+        studio_check(o, req)
+        return _public(await o.run_studio(req.agent, req.input), req.include_events)
+
+    @app.post("/v1/studio/runs/stream", dependencies=[Depends(auth)])
+    async def studio_stream(req: StudioRunRequest, o: Orch) -> EventSourceResponse:
+        studio_check(o, req)
+        return _stream(lambda sink: o.run_studio(req.agent, req.input, sink=sink))
 
     @app.get("/v1/runs/{run_id}", dependencies=[Depends(auth)])
     def get_run(run_id: str, o: Orch) -> dict[str, Any]:
@@ -130,6 +144,32 @@ def create_app(orchestrator: Orchestrator | None = None, api_keys: list[str] | N
         return _public(rec, True)
 
     return app
+
+
+def _stream(start: Callable[[Callable[[Event], Awaitable[None]]], Awaitable[RunRecord]]) -> EventSourceResponse:
+    """Run with every event sent as SSE, then ``done`` with the run record."""
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    async def sink(event: Event) -> None:
+        await queue.put({"event": event.type, "data": json.dumps(dataclasses.asdict(event), ensure_ascii=False)})
+
+    async def produce() -> None:
+        try:
+            rec = await start(sink)
+            await queue.put({"event": "done", "data": json.dumps(_public(rec, False), ensure_ascii=False)})
+        finally:
+            await queue.put(None)
+
+    async def events() -> AsyncIterator[dict[str, Any]]:
+        task = asyncio.create_task(produce())
+        try:
+            while (item := await queue.get()) is not None:
+                yield item
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return EventSourceResponse(events())
 
 
 def _public(rec: RunRecord, include_events: bool) -> dict[str, Any]:
